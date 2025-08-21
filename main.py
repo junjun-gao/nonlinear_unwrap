@@ -42,4 +42,4 @@ def lab_period(param, check_times):
 if __name__ == "__main__":
     with open("params.json") as f:
         param = json.load(f)
-    lab_period(param, 1000)
+    lab_period(param, 1000) 
