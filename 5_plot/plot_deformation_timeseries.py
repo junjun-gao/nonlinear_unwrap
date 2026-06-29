@@ -281,12 +281,12 @@ SAVE_SVG = "six_deformation_types_compare.svg"
 POINT_IDS = [26, 687, 306, 1589, 3001, 2992]
 
 TYPE_NAMES = [
-    "Stable",
-    "Seasonal",
-    "Quadratic",
-    "Step",
     "Power-law",
-    "Piecewise linear"
+    "Step",
+    "Quadratic",
+    "Piecewise linear",
+    "Seasonal",
+    "Stable"
 ]
 
 N_TIMES = 60
@@ -427,7 +427,7 @@ for i, point_id in enumerate(POINT_IDS):
     ax.text(
         0.02,
         0.85,
-        "{}  |  point_id = {}".format(TYPE_NAMES[i], point_id),
+        "{}  ".format(TYPE_NAMES[i]),
         transform=ax.transAxes,
         fontsize=10,
         fontweight="bold"

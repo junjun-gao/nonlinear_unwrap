@@ -749,7 +749,7 @@ def main():
         },
 
         # 迭代次数
-        "iterative_times": 3,
+        "iterative_times": 9,
 
         # 形变相位符号
         # 如果生成观测相位时用的是：
