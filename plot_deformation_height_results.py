@@ -14,6 +14,14 @@ EPOCH = 80
 
 POINT_SIZE = 5
 REF_SIZE = 45
+SELECTED_POINT_SIZE = 80
+
+# 三个目标点的大致位置
+TARGET_POINTS = [
+    ("P1", 116.0514, 39.9602),
+    ("P2", 116.2057, 39.9271),
+    ("P3", 116.0127, 39.8056)
+]
 
 # ============================================================
 # 读取数据
@@ -55,6 +63,29 @@ print("参考点真实高程误差     : %.6f m" % height_true[ref_idx])
 print("参考点估计高程误差     : %.6f m" % height_est[ref_idx])
 
 # ============================================================
+# 查找三个目标位置最近的实际 PS 点
+# ============================================================
+selected_points = []
+
+print("\n================ 选取的三个 PS 点 ================")
+
+for name, target_lon, target_lat in TARGET_POINTS:
+    distance = np.sqrt((longitude - target_lon) ** 2 + (latitude - target_lat) ** 2)
+    idx = np.argmin(distance)
+
+    point_id = df.iloc[idx]["point_id"]
+    point_lon = longitude[idx]
+    point_lat = latitude[idx]
+
+    selected_points.append((name, idx, point_id, point_lon, point_lat))
+
+    print("%s:" % name)
+    print("  point_id  : %s" % str(point_id))
+    print("  index     : %d" % idx)
+    print("  longitude : %.8f" % point_lon)
+    print("  latitude  : %.8f" % point_lat)
+
+# ============================================================
 # 计算误差
 # estimated - true
 # ============================================================
@@ -73,40 +104,44 @@ print("第 %d 相形变 RMSE : %.6f mm" % (EPOCH, deformation_rmse))
 print("高程误差 MAE      : %.6f m" % height_mae)
 print("高程误差 RMSE     : %.6f m" % height_rmse)
 
+print("\n================ 三个点的第80相形变误差 ================")
+
+for name, idx, point_id, point_lon, point_lat in selected_points:
+    print("%s | point_id=%s | error=%.6f mm" % (name, str(point_id), deformation_error[idx]))
+
 # ============================================================
 # 绘图范围
 # ============================================================
 lon_min, lon_max = longitude.min(), longitude.max()
 lat_min, lat_max = latitude.min(), latitude.max()
 
-# 第80相估计形变固定显示范围
 deformation_vmin = -50
 deformation_vmax = 50
 
-# 高程误差估计结果使用关于0对称的范围
-height_limit = np.nanmax(np.abs(height_est))
-height_limit = max(height_limit, 1.0)
-
-# 误差图使用关于0对称的范围
-deformation_error_limit = np.nanmax(np.abs(deformation_error))
-deformation_error_limit = max(deformation_error_limit, 0.1)
-
-height_error_limit = np.nanmax(np.abs(height_error))
-height_error_limit = max(height_error_limit, 0.1)
+height_limit = max(np.nanmax(np.abs(height_est)), 1.0)
+deformation_error_limit = max(np.nanmax(np.abs(deformation_error)), 0.1)
+height_error_limit = max(np.nanmax(np.abs(height_error)), 0.1)
 
 # ============================================================
 # 通用二维绘图函数
 # ============================================================
-def plot_map(values, filename, title, cbar_label, vmin, vmax, mark_reference=False):
+def plot_map(values, filename, title, cbar_label, vmin, vmax, mark_reference=False, mark_selected=False):
     plt.figure(figsize=(7, 6))
 
     sc = plt.scatter(longitude, latitude, c=values, s=POINT_SIZE, cmap="jet", vmin=vmin, vmax=vmax)
     cbar = plt.colorbar(sc)
     cbar.set_label(cbar_label)
 
+    # 标记参考点
     if mark_reference:
         plt.scatter(ref_lon, ref_lat, s=REF_SIZE, marker="^", facecolors="black", edgecolors="black", linewidths=0.5, zorder=10, label="Reference point")
         plt.legend(loc="lower right", frameon=True)
+
+    # 标记 P1、P2、P3
+    if mark_selected:
+        for name, idx, point_id, point_lon, point_lat in selected_points:
+            plt.scatter(point_lon, point_lat, s=SELECTED_POINT_SIZE, marker="o", facecolors="none", edgecolors="black", linewidths=1.5, zorder=12)
+            plt.text(point_lon + 0.002, point_lat + 0.002, name, fontsize=10, fontweight="bold", color="black", zorder=13)
 
     plt.xlabel("Longitude / degree")
     plt.ylabel("Latitude / degree")
@@ -121,7 +156,6 @@ def plot_map(values, filename, title, cbar_label, vmin, vmax, mark_reference=Fal
 
 # ============================================================
 # 1. 第80相估计形变
-# 只在该图中标记参考点
 # ============================================================
 plot_map(
     deformation_est,
@@ -148,7 +182,7 @@ plot_map(
 
 # ============================================================
 # 3. 第80相形变误差
-# estimated - true
+# 在该图中标记 P1、P2、P3
 # ============================================================
 plot_map(
     deformation_error,
@@ -156,12 +190,12 @@ plot_map(
     "Deformation Error - Epoch %d" % EPOCH,
     "Deformation error / mm",
     -deformation_error_limit,
-    deformation_error_limit
+    deformation_error_limit,
+    mark_selected=True
 )
 
 # ============================================================
 # 4. 高程误差差值
-# estimated - true
 # ============================================================
 plot_map(
     height_error,
