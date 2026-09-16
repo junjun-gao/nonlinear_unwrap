@@ -22,10 +22,9 @@ from scipy.sparse.linalg import factorized, lsqr
 PHASE_NOISE_STD_LIST = [0.2, 0.5, 0.8]
 HEIGHT_STD = 20.0
 HEIGHT_STEP = 0.1
-ITERATIVE_TIMES = 3
+ITERATIVE_TIMES = 10
 SPLINE_DEGREE = 3
 SPLINE_LAMBDA = 0.05
-MAX_AMBIGUITY_REFINE = 3
 DISPLACEMENT_SIGN = 1
 BATCH_SIZE = 512
 MAX_ARC_DIST = None
@@ -55,7 +54,7 @@ def get_time_columns(df, prefix, suffix):
 
 def locate_input_files():
     cwd = os.getcwd()
-    candidate_dirs = [os.path.join(cwd, "observed_phase_csv"), cwd]
+    candidate_dirs = [os.path.join(cwd, "observed_seasonal_phase_csv"), cwd]
 
     for input_dir in candidate_dirs:
         observed_files = []
@@ -226,8 +225,41 @@ def weighted_coherence_batch(residual, weight):
 
 
 # ============================================================
-# 10. B-spline temporal arc unwrapping
+# 10. Seasonal-linear temporal arc unwrapping
 # ============================================================
+
+def build_seasonal_linear_fit_operator(time_year, weight):
+    time_relative = np.asarray(time_year, dtype=float) - float(time_year[0])
+    annual_omega = 2.0 * np.pi
+    design = np.column_stack((
+        np.ones_like(time_relative),
+        time_relative,
+        np.sin(annual_omega * time_relative),
+        np.cos(annual_omega * time_relative),
+    ))
+
+    w_sqrt = np.sqrt(np.asarray(weight, dtype=float))
+    lhs = design * w_sqrt[:, None]
+    fit_operator = np.linalg.pinv(lhs) * w_sqrt[None, :]
+    return design, fit_operator
+
+def seasonal_linear_displacement_from_wrapped_phase(displacement_phase, design, fit_operator,
+                                                     wavelength, displacement_sign):
+    displacement_phase = np.asarray(displacement_phase, dtype=float)
+    phase_jumps = np.zeros_like(displacement_phase)
+    phase_jumps[:, 1:] = wrap_phase(np.diff(displacement_phase, axis=1))
+    phase_unwrapped = displacement_phase[:, [0]] + np.cumsum(phase_jumps, axis=1)
+
+    parameters = np.dot(phase_unwrapped, fit_operator.T)
+    phase_model = np.dot(parameters, design.T)
+
+    for _ in range(ITERATIVE_TIMES):
+        ambiguity = np.rint((phase_model - displacement_phase) / (2.0 * np.pi)).astype(np.int64)
+        phase_unwrapped = displacement_phase + 2.0 * np.pi * ambiguity
+        parameters = np.dot(phase_unwrapped, fit_operator.T)
+        phase_model = np.dot(parameters, design.T)
+
+    return phase_model * wavelength / (displacement_sign * 4.0 * np.pi)
 
 def unwrap_arcs_bspline(phase_wrapped, arcs, bperp, time_year, wavelength, incidence_angle_deg, slant_range):
     n_time = phase_wrapped.shape[1]
@@ -242,8 +274,7 @@ def unwrap_arcs_bspline(phase_wrapped, arcs, bperp, time_year, wavelength, incid
     initial_height_sum = np.sum(height_search_phasor, axis=0)
 
     weight = np.ones(n_time, dtype=float)
-    time_norm = normalized_time(time_year)
-    design, fit_operator = build_spline_fit_operator(time_norm, height_system, weight, SPLINE_DEGREE, SPLINE_LAMBDA)
+    seasonal_design, seasonal_fit_operator = build_seasonal_linear_fit_operator(time_year, weight)
 
     arc_phase_unwrapped = np.zeros((n_arcs, n_time), dtype=float)
     arc_ambiguity = np.zeros((n_arcs, n_time), dtype=np.int16)
@@ -259,7 +290,9 @@ def unwrap_arcs_bspline(phase_wrapped, arcs, bperp, time_year, wavelength, incid
 
         e_disp = np.exp(1j * obs) * initial_height_sum[None, :]
         displacement_phase = np.angle(lowpass_filter_complex_batch(e_disp, min(5, n_time)))
-        d_est = displacement_from_wrapped_phase(displacement_phase, wavelength, DISPLACEMENT_SIGN)
+        d_est = seasonal_linear_displacement_from_wrapped_phase(
+            displacement_phase, seasonal_design, seasonal_fit_operator, wavelength, DISPLACEMENT_SIGN
+        )
 
         terrain_phase = wrap_phase(obs - DISPLACEMENT_SIGN * 4.0 * np.pi * d_est / wavelength)
         objective = np.dot(np.exp(1j * terrain_phase) * weight[None, :], height_search_phasor.T) / np.sum(weight)
@@ -267,7 +300,9 @@ def unwrap_arcs_bspline(phase_wrapped, arcs, bperp, time_year, wavelength, incid
 
         for _ in range(ITERATIVE_TIMES):
             displacement_phase = wrap_phase(obs - h_est[:, None] * height_system[None, :])
-            d_est = displacement_from_wrapped_phase(displacement_phase, wavelength, DISPLACEMENT_SIGN)
+            d_est = seasonal_linear_displacement_from_wrapped_phase(
+                displacement_phase, seasonal_design, seasonal_fit_operator, wavelength, DISPLACEMENT_SIGN
+            )
             terrain_phase = wrap_phase(obs - DISPLACEMENT_SIGN * 4.0 * np.pi * d_est / wavelength)
             objective = np.dot(np.exp(1j * terrain_phase) * weight[None, :], height_search_phasor.T) / np.sum(weight)
             h_est = height_search_space[np.argmax(np.abs(objective), axis=1)]
@@ -275,25 +310,11 @@ def unwrap_arcs_bspline(phase_wrapped, arcs, bperp, time_year, wavelength, incid
         temporal_model0 = h_est[:, None] * height_system[None, :] + DISPLACEMENT_SIGN * 4.0 * np.pi * d_est / wavelength
         ambiguity = np.rint((temporal_model0 - obs) / (2.0 * np.pi)).astype(np.int64)
         phase_unwrapped = obs + 2.0 * np.pi * ambiguity
-
-        solution = np.dot(phase_unwrapped, fit_operator.T)
-        model = np.dot(solution, design.T)
-
-        for _ in range(MAX_AMBIGUITY_REFINE):
-            ambiguity_new = np.rint((model - obs) / (2.0 * np.pi)).astype(np.int64)
-            if np.array_equal(ambiguity_new, ambiguity): break
-            ambiguity = ambiguity_new
-            phase_unwrapped = obs + 2.0 * np.pi * ambiguity
-            solution = np.dot(phase_unwrapped, fit_operator.T)
-            model = np.dot(solution, design.T)
-
-        ambiguity = np.rint((model - obs) / (2.0 * np.pi)).astype(np.int64)
-        phase_unwrapped = obs + 2.0 * np.pi * ambiguity
-        residual = wrap_phase(obs - model)
+        residual = wrap_phase(obs - temporal_model0)
 
         arc_phase_unwrapped[start:end, :] = phase_unwrapped
         arc_ambiguity[start:end, :] = np.clip(ambiguity, -32768, 32767).astype(np.int16)
-        arc_delta_h[start:end] = solution[:, 1]
+        arc_delta_h[start:end] = h_est
         arc_res_std[start:end] = weighted_std_batch(residual, weight)
         arc_coherence[start:end] = weighted_coherence_batch(residual, weight)
 

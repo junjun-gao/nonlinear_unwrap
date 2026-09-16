@@ -74,7 +74,7 @@ def get_time_columns(df, prefix, suffix):
 
 def locate_input_files():
     cwd = os.getcwd()
-    candidate_dirs = [os.path.join(cwd, "observed_phase_csv"), cwd]
+    candidate_dirs = [os.path.join(cwd, "observed_seasonal_phase_csv"), cwd]
 
     for input_dir in candidate_dirs:
         observed_files = []
